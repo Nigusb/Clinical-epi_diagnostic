@@ -1,0 +1,255 @@
+---
+title: "Clinical epi_Assignment 1"
+author: "Nigus Yimer"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load packages 
+
+```{r}
+pacman::p_load("tidyverse",
+               "rio",
+               "here",
+               "skimr",
+               "janitor")
+```
+
+## Import dataset
+
+```{r}
+GRACE <- import("GRACE_data.csv")
+```
+
+## Load packages for prediction model
+
+```{r}
+library(pROC)
+library(epiDisplay)
+library(PredictABEL)
+```
+
+## Explore the data
+
+```{r}
+## explore the data
+names(GRACE)
+head(GRACE)
+str(GRACE)
+```
+
+## Describe the variables 
+
+```{r}
+## check distribution of continuous variables using plot
+hist(GRACE$Oral_temp)
+hist(GRACE$breaths_min)
+hist(GRACE$CRP)
+shapiro.test(GRACE$breaths_min)
+
+## describe patients' characteristics--continuous variables
+skim(GRACE$Oral_temp)
+skim(GRACE$breaths_min)
+skim(GRACE$CRP)
+
+## describe patients' characteristics--categorical variables 
+library(table1)
+table1(~as.factor(pneumonia) + as.factor(Suspected_pneumonia) + as.factor(Cough_sev) + as.factor(Phlegm_colour), data= GRACE)
+
+## tabulate by pneumonia status of patients
+table1(~ as.factor(Suspected_pneumonia) + as.factor(Cough_sev) + as.factor(Phlegm_colour) | as.factor(pneumonia), data= GRACE)
+
+```
+
+## Change the variable types
+
+```{r}
+GRACE$Cough_sev <- as.factor(GRACE$Cough_sev)
+GRACE$Phlegm_colour <- as.factor(GRACE$Phlegm_colour)
+GRACE$Suspected_pneumonia <- as.factor(GRACE$Suspected_pneumonia)
+```
+
+## Univariate analysis
+
+```{r}
+null_model <- glm(pneumonia ~ 1, family = binomial, data = GRACE)
+summary(null_model)
+
+cough_uni <- glm(pneumonia ~ Cough_sev, family = binomial, data = GRACE)
+summary(cough_uni)
+confint(cough_uni)
+
+temp_uni <- glm(pneumonia ~ Oral_temp, family = binomial, data = GRACE)
+summary(temp_uni)
+
+phlegm_uni <- glm(pneumonia ~ Phlegm_colour, family = binomial, data = GRACE)
+summary(phlegm_uni)
+
+breath_uni <- glm(pneumonia ~ breaths_min, family = binomial, data = GRACE)
+summary(breath_uni)
+
+sus_pnu_uni <- glm(pneumonia ~ Suspected_pneumonia, family = binomial, data = GRACE)
+
+## check significance test using LR test
+
+lrtest(null_model, cough_uni)
+lrtest(null_model, temp_uni)
+lrtest(null_model, phlegm_uni)
+lrtest(null_model, breath_uni)
+```
+
+## Multivariable analysis
+
+```{r}
+full_model <- glm(pneumonia ~ Oral_temp + breaths_min, family = binomial, data = GRACE)
+summary(full_model)
+confint(full_model)
+
+## convert coeffiients to odds ratios
+exp(coef(full_model))
+exp(confint(full_model))
+
+```
+
+## Model reduction using LRT
+
+```{r}
+lrtest(full_model, breath_uni)
+lrtest(full_model, temp_uni)
+
+## Build model using temperature only
+full_model_1 <- glm(pneumonia ~ Oral_temp, family = binomial, data = GRACE)  # reduction is allowed at p>= 0.1
+
+## convert estimates and CIs of categorical variables to odds ratios
+exp(coef(Allvar_model))
+exp(confint(Allvar_model))
+```
+
+## sign and symptoms model performance
+
+```{r}
+## Predictive probability 
+prediction <- predict(full_model_1, type = "response")
+
+## Caliberation
+plotCalibration(GRACE, 7, prediction, groups = 20)
+
+## Descrimination 
+plot.roc(GRACE$pneumonia, prediction, groups= 20, main= "", ci= TRUE, print.auc= TRUE, grid.col= "red")
+```
+
+# Assess the added value of CRP in addition to signs and symptoms
+```{r}
+## Run the model with CRP
+final_model_CRP <- glm(pneumonia ~ Oral_temp + CRP, family = binomial, data = GRACE)
+## 
+## Significance of additional variable
+lrtest(final_model_CRP, final_model)
+
+## Model performance
+prediction_CRP <- predict(final_model_CRP, type = "response")
+
+## Caliberation
+plotCalibration(GRACE, 7, prediction_CRP, groups = 20)
+
+## Descrimination
+plot.roc(GRACE$pneumonia, prediction_CRP, groups= 20, main= "", ci= TRUE, print.auc= TRUE)
+```
+
+## Compare the two ROC curves (final model vs final model with CRP)
+```{r}
+## Check using plots
+plot.roc(GRACE$pneumonia, prediction, main= "ROC comparison", col= "red") +
+lines.roc(GRACE$pneumonia, prediction_CRP, col= "blue")
+
+# add legend to the plot
+legend("bottom", legend = c("sign and symptoms", "sign and symptoms plus CRP"), col = c("red", "blue"),lwd = 2) # add legend
+
+## Add AUC values in the legend
+auc_valuesSSCRP <- c(0.581, 0.740)
+legend("bottom", legend = c(
+    paste("Sign and symptoms (AUC =", auc_valuesSSCRP[1], ")"),
+  paste("Sign and symptoms plus CRP (AUC =", auc_valuesSSCRP[2], ")")
+ ), col = c("red", "blue"), lwd = 2)
+
+## Check using formal tests
+roc_symptom <- roc(GRACE$pneumonia, prediction, plot= TRUE, print.auc= TRUE)
+roc_symptom_CRP <- roc(GRACE$pneumonia, prediction_CRP, plot= TRUE, print.auc= TRUE)
+roc.test(roc_symptom, roc_symptom_CRP) 
+roc.test(roc_symptom, roc_symptom_CRP, method= "bootstrap", boot.n=2000)
+```
+
+## Net reclassification improvement
+
+```{r}
+reclassification(GRACE, 7, prediction, prediction_CRP, c(0, 0.025, 0.20, 1))   
+
+```
+
+# Develop a prediction model based on GPs’ clinical judgement
+```{r}
+## Run model with suspected pneumonia
+final_model_pneu <- glm(pneumonia ~ Oral_temp + Suspected_pneumonia, family = binomial, data = GRACE)
+
+## Significance of GP's clinical judgement
+lrtest(final_model_pneu, null_model)
+
+## Predicted probability
+prediction_GP <- predict(final_model_pneu, type = "response")
+
+## Calibration
+plotCalibration(GRACE, 7, prediction_GP, groups = 20)
+
+## Descrimination
+plot.roc(GRACE$pneumonia, prediction_GP, groups= 20, main= "", ci= TRUE, print.auc= TRUE)
+```
+
+# Benefit of adding CRP to the model based on GPs’ clinical judgement
+```{r}
+## Run model by adding CRP
+final_model_pneuCRP <- glm(pneumonia ~ Oral_temp + Suspected_pneumonia + CRP, family = binomial, data = GRACE)
+
+## Assess significance using LRT
+lrtest(final_model_pneuCRP, final_model_pneu)
+
+## Predicted probability
+prediction_GP_CRP <- predict(final_model_pneuCRP, type = "response")
+
+## Calibration
+plotCalibration(GRACE, 7, prediction_GP_CRP, groups = 20)
+
+## ## Descrimination
+plot.roc(GRACE$pneumonia, prediction_GP_CRP, groups= 20, main= "", ci= TRUE, print.auc= TRUE)
+
+```
+
+## Compare the ROC curves
+```{r}
+## Check using plots
+plot.roc(GRACE$pneumonia, prediction_GP, main= "ROC comparison", col= "blue") +
+lines.roc(GRACE$pneumonia, prediction_GP_CRP, col= "green")
+## Add legend to the plot
+legend("bottom", legend = c("GPs clinical judgment", "GPs clinical judgment plus CRP"), col = c("blue", "green"),lwd = 2)
+## Add AUC values in the legend
+auc_valuesGPCRP <- c(0.734, 0.799)
+legend("bottom", legend = c(
+    paste("GPs clinical judgment (AUC =", auc_valuesGPCRP[1], ")"),
+  paste("GPs clinical judgment plus CRP (AUC =", auc_valuesGPCRP[2], ")")
+ ), col = c("blue", "green"), lwd = 2)
+
+## Check using formal tests
+roc_GP <- roc(GRACE$pneumonia, prediction_GP, plot= TRUE, print.auc= TRUE)
+roc_GP_CRP <- roc(GRACE$pneumonia, prediction_GP_CRP, plot= TRUE, print.auc= TRUE)
+roc.test(roc_GP, roc_GP_CRP) # delong method
+roc.test(roc_GP, roc_GP_CRP, method= "bootstrap", boot.n=2000)  # using bootsrap method
+```
+
+## Net reclassification improvement 
+```{r}
+reclassification(GRACE, 7, prediction_GP, prediction_GP_CRP, c(0, 0.025, 0.20, 1))
+```
+
