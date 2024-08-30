@@ -1,5 +1,5 @@
 ---
-title: "Clinical epi_Assignment 1"
+title: "Diagnostic model"
 author: "Nigus Yimer"
 date: "`r Sys.Date()`"
 output: html_document
